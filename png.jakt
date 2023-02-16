@@ -1,0 +1,502 @@
+import extern c "zlib.h" {
+    extern struct z_stream {
+        fn z_stream() -> z_stream
+
+        avail_in: u32
+        next_in: raw u8
+        avail_out: u32
+        next_out: raw u8
+    }
+    extern fn inflateInit(anon stream: raw z_stream) -> c_int
+    extern fn inflateEnd(anon stream: raw z_stream) -> c_int
+    extern fn inflate(anon stream: raw z_stream, flush: c_int) -> c_int
+}
+
+fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
+
+    let z_ok: c_int = 0
+    let z_no_flush: c_int = 0
+    let z_stream_end: c_int = 1
+
+    mut stream = z_stream()
+    if inflateInit(&raw stream) != z_ok {
+        throw Error::from_string_literal("zlib initialization failed")
+    }
+
+    defer inflateEnd(&raw stream)
+
+    mut input_slice = input[..]
+
+    mut output: [u8] = []
+    mut buffer = [0u8; 65536]
+
+    loop {
+        stream.avail_in = input_slice.size() as! u32
+        unsafe { cpp { "stream.next_in = input_slice.unsafe_data();" } } 
+        
+        stream.avail_out = buffer.size() as! u32
+        unsafe { cpp { "stream.next_out = buffer.unsafe_data();" } }
+
+        let rc = inflate(&raw stream, flush: z_no_flush)
+
+        if rc != z_ok and rc != z_stream_end {
+            eprintln("Panic: inflate() returned {}", rc)
+            abort()
+        }
+
+        let bytes_decompressed = buffer.size() - stream.avail_out as! usize
+        output.ensure_capacity(output.size() + bytes_decompressed)
+        for i in 0..bytes_decompressed {
+            output.push(buffer[i])
+        }
+
+        if rc == z_stream_end {
+            break
+        }
+    }
+
+    return output
+}
+
+fn abs<T>(anon x: T) -> T {
+    if x < 0 {
+        return -x
+    }
+    return x
+}
+
+enum InterlaceMethod {
+    Null
+    Adam7
+}
+
+enum ColorType {
+    Grayscale
+    Truecolor
+    IndexedColor
+    GrayscaleWithAlpha
+    TruecolorWithAlpha
+}
+
+enum FilterType {
+    None
+    Sub
+    Up
+    Average
+    Paeth
+}
+
+struct Scanline {
+    filter: FilterType
+    data: ArraySlice<u8>
+}
+
+enum State : u8 {
+    NotDecoded
+    Error
+    HeaderDecoded
+    SizeDecoded
+    ChunksDecoded
+    BitmapDecoded
+}
+
+fn expected_png_header() throws -> [u8] {
+    return [0x89, b'P', b'N', b'G', 13, 10, 26, 10]
+}
+
+struct PNGDecoder {
+    data: [u8]
+    width: u32? = None
+    height: u32? = None
+    state: State = State::NotDecoded
+    compressed_data: ArraySlice<u8>? = None
+    interlace_method: InterlaceMethod? = None
+    color_type: ColorType? = None
+    bit_depth: usize = 0
+    channels: usize = 0
+
+    fn create(data: [u8]) -> PNGDecoder {
+        return PNGDecoder(data)
+    }
+
+    fn decode_header(mut this) throws {
+        guard .state < State::HeaderDecoded else {
+            return
+        }
+
+        guard .data.size() >= expected_png_header().size() else {
+            throw Error::from_string_literal("PNG header too small")
+        }
+
+        let actual_png_header = .data[0..expected_png_header().size()]
+        // FIXME: Should we allow comparing (`==`) an array to a slice of an array?
+        guard actual_png_header == expected_png_header()[..] else {
+            throw Error::from_string_literal("PNG header invalid")
+        }
+
+        .state = State::HeaderDecoded
+    }
+
+    fn decode_size(mut this) throws {
+        guard .state < State::SizeDecoded else {
+            return
+        }
+
+        .decode_header()
+
+        let data = .data[expected_png_header().size()..]
+        mut streamer = Streamer::create(data)
+
+        while not streamer.at_end() {
+            .process_chunk(&mut streamer)
+
+            if .width.has_value() and .height.has_value() {
+                .state = State::SizeDecoded
+                return
+            }
+        }
+
+        throw Error::from_string_literal("PNG size not found")
+    }
+
+    fn decode_bitmap(mut this) throws {
+        guard .state < State::BitmapDecoded else {
+            return
+        }
+
+        .decode_chunks()
+
+        guard .width.has_value() and .height.has_value() else {
+            throw Error::from_string_literal("PNG has no size")
+        }
+
+        // FIXME: Check for PLTE chunk here if required by the color format.
+
+        guard .compressed_data.has_value() else {
+            throw Error::from_string_literal("PNG compressed data missing")
+        }
+
+        let decompressed_data = zlib_decompress(.compressed_data!)
+
+        match .interlace_method! {
+            Null => {
+                .decode_bitmap_simple(decompressed_data[..])
+            }
+            Adam7 => {
+                throw Error::from_string_literal("FIXME: Implement Adam7 interlaced PNG support")
+            }
+        }
+    }
+
+    fn compute_scanline_size_for_width(this, anon width: u32) -> usize {
+        mut size = width as! usize
+        size *= .channels
+        size *= .bit_depth
+        size += 7
+        size /= 8
+        // FIXME: Throw on overflow.
+        return size
+    }
+
+    fn decode_bitmap_simple(mut this, anon data: ArraySlice<u8>) throws {
+
+        mut scanlines: [Scanline] = []
+
+        mut streamer = Streamer::create(data)
+        for y in 0...height! {
+            let filter = match streamer.read<u8>() {
+                0 => FilterType::None
+                1 => FilterType::Sub
+                2 => FilterType::Up
+                3 => FilterType::Average
+                4 => FilterType::Paeth
+                else => {
+                    throw Error::from_string_literal("Invalid PNG filter")
+                }
+            }
+
+            let scanline_size = .compute_scanline_size_for_width(.width!)
+            scanlines.push(Scanline(filter, data: streamer.read_bytes(scanline_size)))
+        }
+
+        .unfilter(&mut scanlines)
+    }
+
+    fn unfilter(mut this, scanlines: &mut [Scanline]) throws{
+        let bytes_per_scanline = scanlines[0].data.size()
+        mut bytes_needed_for_all_unfiltered_scanlines = 0uz
+        for scanline in *scanlines {
+            if not scanline.filter is None {
+                bytes_needed_for_all_unfiltered_scanlines += bytes_per_scanline
+            }
+        }
+
+        mut unfiltered_data = [0u8; bytes_needed_for_all_unfiltered_scanlines]
+
+        let bytes_per_complete_pixel = (.bit_depth + 7) / 8 * .channels
+        mut dummy_scanline_bytes = [0u8; bytes_per_scanline]
+        mut previous_scanline_data = dummy_scanline_bytes[..]
+
+        mut data_start = 0uz
+        for y in 0..scanlines.size() {
+            if not scanlines[y].filter is None {
+                // unfilter
+                mut scanline_data = unfiltered_data[data_start..(data_start + bytes_per_scanline)]
+                unsafe { cpp { "memcpy(scanline_data.unsafe_data(), scanlines[y].data.unsafe_data(), scanlines[y].data.size());" } }
+                scanlines[y].data = scanline_data 
+
+                .unfilter_scanline(
+                    filter: scanlines[y].filter
+                    scanline_data
+                    previous_scanline_data
+                    bytes_per_complete_pixel
+                )
+
+                data_start += bytes_per_scanline
+            }
+            previous_scanline_data = scanlines[y].data
+        }
+
+        match .color_type! {
+            Truecolor => {
+                // FIXME: Handle transparency data if present.
+
+                match .bit_depth {
+                    8 => {
+                        .unpack_triplets_without_alpha<u8>(scanlines)
+                    }
+                    16 => {
+                        throw Error::from_string_literal("FIXME: Implement 16-bit Truecolor mode")
+                    }
+                    else => {
+                        eprintln("Internal error: Invalid bit depth for color type")
+                        abort()
+                    }
+                }
+            }
+            else => {
+                throw Error::from_string_literal("FIXME: Unimplemented color type")
+            }
+        }
+    }
+
+    fn unpack_triplets_without_alpha<T>(this, scanlines: &mut [Scanline]) throws {
+        for y in 0..scanlines.size() {
+            mut streamer = Streamer::create(data: scanlines[y].data[..])
+            for x in 0...width! {
+                let r = streamer.read<T>()
+                let g = streamer.read<T>()
+                let b = streamer.read<T>()
+                print("\033[48;2;{};{};{}m ", r, g, b)
+            }
+            println("\033[0m")
+        }
+    }
+
+    fn unfilter_scanline(
+        this
+        filter: FilterType
+        mut scanline_data: ArraySlice<u8>
+        previous_scanline_data: ArraySlice<u8>
+        bytes_per_complete_pixel: usize
+    ) throws {
+        // FIXME: Find an ergonomic way to not check overflow on integer math in this function.
+        //        It currently falls apart if optimizations are disabled!
+        match filter {
+            Sub => {
+                for i in bytes_per_complete_pixel..scanline_data.size() {
+                    let left = scanline_data[i - bytes_per_complete_pixel]
+                    scanline_data[i] = unchecked_add(scanline_data[i], left)
+                }
+            }
+            Paeth => {
+                for i in 0..scanline_data.size() {
+                    let left = match (i < bytes_per_complete_pixel) {
+                        true => 0u8
+                        else => scanline_data[i - bytes_per_complete_pixel]
+                    }
+                    let above = previous_scanline_data[i]
+                    let upper_left = match (i < bytes_per_complete_pixel) {
+                        true => 0u8
+                        else => previous_scanline_data[i - bytes_per_complete_pixel]
+                    } 
+                    let predictor: i32 = left + above - upper_left
+                    let predictor_left = abs(predictor - left as! i32) as! u32
+                    let predictor_above = abs(predictor - above as! i32) as! u32
+                    let predictor_upper_left = abs(predictor - upper_left as! i32) as! u32
+                    mut nearest: u8 = 0
+
+                    if predictor_left <= predictor_above and predictor_left <= predictor_upper_left {
+                        nearest = left
+                    } else if predictor_above <= predictor_upper_left {
+                        nearest = above
+                    } else {
+                        nearest = upper_left
+                    }
+
+                    scanline_data[i] += nearest
+                }
+            }
+            else => {
+                throw Error::from_string_literal("FIXME: Unimplemented scanline filter")
+            }
+        }
+    }
+
+    fn decode_chunks(mut this) throws {
+        guard .state < State::ChunksDecoded else {
+            return
+        }
+        
+        .decode_header()
+        let data = .data[expected_png_header().size()..]
+        mut streamer = Streamer::create(data)
+        while not streamer.at_end() {
+            .process_chunk(&mut streamer)
+        }
+
+        .state = State::ChunksDecoded
+    }
+
+    fn process_chunk(mut this, streamer: &mut Streamer) throws {
+        let chunk_size = streamer.read<u32>()
+        let chunk_type = streamer.read_bytes(4)
+        let chunk_data = streamer.read_bytes(chunk_size as! usize)
+        let chunk_crc = streamer.read<u32>()
+
+        let chunk_type_name = String::from_utf8(chunk_type.to_array())
+        println("chunk! size: {}, type: {} ({}), crc: {}", chunk_size, chunk_type, chunk_type_name, chunk_crc)
+
+        match chunk_type_name {
+            "IHDR" => { .process_IHDR(chunk_data) }
+            "IDAT" => { .process_IDAT(chunk_data) }
+            else => {
+                eprintln("FIXME: Support chunk type {}", chunk_type_name)
+            }
+        }
+    }
+
+    fn process_IHDR(mut this, anon data: ArraySlice<u8>) throws {
+        mut streamer = Streamer::create(data)
+        let width = streamer.read<u32>()
+        let height = streamer.read<u32>()
+        let bit_depth = streamer.read<u8>()
+        let color_type = streamer.read<u8>()
+        let compression_method = streamer.read<u8>()
+        let filter_method = streamer.read<u8>()
+        let interlace_method = streamer.read<u8>()
+
+        .width = width
+        .height = height
+        .bit_depth = bit_depth as! usize
+
+        .color_type = match color_type {
+            0 => ColorType::Grayscale
+            2 => ColorType::Truecolor
+            3 => ColorType::IndexedColor
+            4 => ColorType::GrayscaleWithAlpha
+            6 => ColorType::TruecolorWithAlpha
+            else => {
+                throw Error::from_string_literal("Invalid PNG color type")
+            }
+        }
+
+        match .color_type! {
+            Grayscale => {
+                throw Error::from_string_literal("FIXME: Implement Grayscale")
+            }
+            GrayscaleWithAlpha => {
+                throw Error::from_string_literal("FIXME: Implement GrayscaleWithAlpha")
+            }
+            Truecolor => {
+                guard .bit_depth == 8 or .bit_depth == 16 else {
+                    throw Error::from_string_literal("Invalid bit depth for color type")
+                }
+                .channels = 3
+            }
+            TruecolorWithAlpha => {
+                throw Error::from_string_literal("FIXME: Implement TruecolorWithAlpha")
+            }
+            IndexedColor => {
+                throw Error::from_string_literal("FIXME: Implement IndexedColor")
+            }
+        }
+
+        .interlace_method = match interlace_method {
+            0 => InterlaceMethod::Null
+            1 => InterlaceMethod::Adam7
+            else => {
+                throw Error::from_string_literal("Invalid PNG interlace method")
+            }
+        }
+    }
+
+    fn process_IDAT(mut this, anon data: ArraySlice<u8>) throws {
+        .compressed_data = data
+    }
+
+}
+
+struct Streamer {
+    data: ArraySlice<u8>
+
+    fn create(data: ArraySlice<u8>) -> Streamer {
+        return Streamer(data)
+    }
+
+    fn at_end(this) -> bool {
+        return .data.is_empty()
+    }
+
+    fn read_bytes(mut this, anon count: usize) throws -> ArraySlice<u8> {
+        if .data.size() < count {
+            throw Error::from_string_literal("Unexpected end of PNG data")
+        }
+        let bytes = .data[0..count]
+        .data = .data[count..]
+        return bytes
+    }
+
+    fn read<T>(mut this) throws -> T {
+        if .data.size() < sizeof T {
+            throw Error::from_string_literal("Unexpected end of PNG data")
+        }
+
+        mut value: T = 0
+        mut left_shift: T = (sizeof T - 1) * 8
+
+        for i in 0..sizeof T {
+            let b = .data[i]
+            if left_shift > 0 {
+                value |= (b as! T) << left_shift
+                left_shift -= 8
+            } else {
+                value |= (b as! T)
+            }
+        }
+
+        .data = .data[sizeof T..]
+        return value
+    }
+}
+
+fn main(args: [String]) throws -> c_int {
+    if args.size() < 2 {
+        eprintln("usage: {} <png file>", args[0])
+        return 1
+    }
+
+    mut file = File::open_for_reading(args[1])
+    let data = file.read_all()
+
+    mut decoder = PNGDecoder::create(data)
+
+    decoder.decode_header()
+    decoder.decode_size()
+
+    println("size: {}x{}", decoder.width!, decoder.height!)
+
+    decoder.decode_bitmap()
+
+    return 0
+}
