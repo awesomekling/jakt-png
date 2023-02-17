@@ -280,6 +280,12 @@ struct PNGDecoder {
                     scanline_data[i] = unchecked_add(scanline_data[i], left)
                 }
             }
+            Up => {
+                for i in 0..scanline_data.size() {
+                    let above = previous_scanline_data[i]
+                    scanline_data[i] += above
+                }
+            }
             Paeth => {
                 for i in 0..scanline_data.size() {
                     let left = match (i < bytes_per_complete_pixel) {
