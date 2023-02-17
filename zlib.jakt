@@ -1,0 +1,59 @@
+import extern c "zlib.h" {
+    extern struct z_stream {
+        fn z_stream() -> z_stream
+
+        avail_in: u32
+        next_in: raw u8
+        avail_out: u32
+        next_out: raw u8
+    }
+    extern fn inflateInit(anon stream: raw z_stream) -> c_int
+    extern fn inflateEnd(anon stream: raw z_stream) -> c_int
+    extern fn inflate(anon stream: raw z_stream, flush: c_int) -> c_int
+}
+
+fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
+
+    let z_ok: c_int = 0
+    let z_no_flush: c_int = 0
+    let z_stream_end: c_int = 1
+
+    mut stream = z_stream()
+    if inflateInit(&raw stream) != z_ok {
+        throw Error::from_string_literal("zlib initialization failed")
+    }
+
+    defer inflateEnd(&raw stream)
+
+    mut input_slice = input[..]
+
+    mut output: [u8] = []
+    mut buffer = [0u8; 65536]
+
+    loop {
+        stream.avail_in = input_slice.size() as! u32
+        unsafe { cpp { "stream.next_in = input_slice.unsafe_data();" } }
+
+        stream.avail_out = buffer.size() as! u32
+        unsafe { cpp { "stream.next_out = buffer.unsafe_data();" } }
+
+        let rc = inflate(&raw stream, flush: z_no_flush)
+
+        if rc != z_ok and rc != z_stream_end {
+            eprintln("Panic: inflate() returned {}", rc)
+            abort()
+        }
+
+        let bytes_decompressed = buffer.size() - stream.avail_out as! usize
+        output.ensure_capacity(output.size() + bytes_decompressed)
+        for i in 0..bytes_decompressed {
+            output.push(buffer[i])
+        }
+
+        if rc == z_stream_end {
+            break
+        }
+    }
+
+    return output
+}
