@@ -308,7 +308,7 @@ struct PNGDecoder {
                         true => 0u8
                         else => previous_scanline_data[i - bytes_per_complete_pixel]
                     } 
-                    let predictor: i32 = left + above - upper_left
+                    let predictor: i32 = (left as! i32) + (above as! i32) - (upper_left as! i32)
                     let predictor_left = abs(predictor - left as! i32) as! u32
                     let predictor_above = abs(predictor - above as! i32) as! u32
                     let predictor_upper_left = abs(predictor - upper_left as! i32) as! u32
