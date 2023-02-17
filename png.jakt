@@ -353,7 +353,6 @@ struct PNGDecoder {
         let chunk_crc = streamer.read<u32>()
 
         let chunk_type_name = String::from_utf8(chunk_type.to_array())
-        println("chunk! size: {}, type: {} ({}), crc: {}", chunk_size, chunk_type, chunk_type_name, chunk_crc)
 
         match chunk_type_name {
             "IHDR" => { .process_IHDR(chunk_data) }
