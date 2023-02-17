@@ -358,6 +358,7 @@ struct PNGDecoder {
         match chunk_type_name {
             "IHDR" => { .process_IHDR(chunk_data) }
             "IDAT" => { .process_IDAT(chunk_data) }
+            "IEND" => { }
             else => {
                 eprintln("FIXME: Support chunk type {}", chunk_type_name)
             }
