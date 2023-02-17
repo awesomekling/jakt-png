@@ -216,6 +216,21 @@ struct PNGDecoder {
                     }
                 }
             }
+
+            TruecolorWithAlpha => {
+                match .bit_depth {
+                    8 => {
+                        .unpack_quadruplets_with_alpha<u8>(scanlines)
+                    }
+                    16 => {
+                        throw Error::from_string_literal("FIXME: Implement 16-bit TruecolorWithAlpha mode")
+                    }
+                    else => {
+                        eprintln("Internal error: Invalid bit depth for color type")
+                        abort()
+                    }
+                }
+            }
             else => {
                 throw Error::from_string_literal("FIXME: Unimplemented color type")
             }
@@ -229,6 +244,20 @@ struct PNGDecoder {
                 let r = streamer.read<T>()
                 let g = streamer.read<T>()
                 let b = streamer.read<T>()
+                print("\033[48;2;{};{};{}m ", r, g, b)
+            }
+            println("\033[0m")
+        }
+    }
+
+    fn unpack_quadruplets_with_alpha<T>(this, scanlines: &mut [Scanline]) throws {
+        for y in 0..scanlines.size() {
+            mut streamer = Streamer::create(data: scanlines[y].data[..])
+            for x in 0...width! {
+                let r = streamer.read<u8>()
+                let g = streamer.read<u8>()
+                let b = streamer.read<u8>()
+                let a = streamer.read<u8>()
                 print("\033[48;2;{};{};{}m ", r, g, b)
             }
             println("\033[0m")
@@ -357,7 +386,10 @@ struct PNGDecoder {
                 .channels = 3
             }
             TruecolorWithAlpha => {
-                throw Error::from_string_literal("FIXME: Implement TruecolorWithAlpha")
+                guard .bit_depth == 8 or .bit_depth == 16 else {
+                    throw Error::from_string_literal("Invalid bit depth for color type")
+                }
+                .channels = 4
             }
             IndexedColor => {
                 throw Error::from_string_literal("FIXME: Implement IndexedColor")
