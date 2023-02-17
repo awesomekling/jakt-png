@@ -286,6 +286,17 @@ struct PNGDecoder {
                     scanline_data[i] += above
                 }
             }
+            Average => {
+                for i in 0..scanline_data.size() {
+                    let left = match (i < bytes_per_complete_pixel) {
+                        true => 0u32
+                        else => scanline_data[i - bytes_per_complete_pixel] as! u32
+                    }
+                    let above = previous_scanline_data[i] as! u32
+                    let average = as_truncated<u8>((left + above) / 2)
+                    scanline_data[i] += average
+                }
+            }
             Paeth => {
                 for i in 0..scanline_data.size() {
                     let left = match (i < bytes_per_complete_pixel) {
