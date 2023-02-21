@@ -7,6 +7,10 @@ fn abs<T>(anon x: T) -> T {
     return x
 }
 
+import extern c "string.h" {
+    extern unsafe fn memcpy(destination: raw u8, source: raw u8, byte_count: usize)
+}
+
 enum InterlaceMethod {
     Null
     Adam7
@@ -184,7 +188,13 @@ struct PNGDecoder {
             if not scanlines[y].filter is None {
                 // unfilter
                 mut scanline_data = unfiltered_data[data_start..(data_start + bytes_per_scanline)]
-                unsafe { cpp { "memcpy(scanline_data.unsafe_data(), scanlines[y].data.unsafe_data(), scanlines[y].data.size());" } }
+                unsafe {
+                    memcpy(
+                        destination: scanline_data.unsafe_data()
+                        source: scanlines[y].data.unsafe_data()
+                        byte_count: scanlines[y].data.size()
+                    )
+                }
                 scanlines[y].data = scanline_data 
 
                 .unfilter_scanline(
