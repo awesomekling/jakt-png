@@ -39,10 +39,10 @@ fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
 
     loop {
         stream.avail_in = input_slice.size() as! u32
-        unsafe { cpp { "stream.next_in = input_slice.unsafe_data();" } }
+        stream.next_in = input_slice.unsafe_data()
 
         stream.avail_out = buffer.size() as! u32
-        unsafe { cpp { "stream.next_out = buffer.unsafe_data();" } }
+        stream.next_out = buffer.unsafe_data()
 
         mut rc: c_int = 0
         unsafe {
