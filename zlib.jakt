@@ -7,9 +7,9 @@ import extern c "zlib.h" {
         avail_out: u32
         next_out: raw u8
     }
-    extern fn inflateInit(anon stream: raw z_stream) -> c_int
-    extern fn inflateEnd(anon stream: raw z_stream) -> c_int
-    extern fn inflate(anon stream: raw z_stream, flush: c_int) -> c_int
+    extern unsafe fn inflateInit(anon stream: raw z_stream) -> c_int
+    extern unsafe fn inflateEnd(anon stream: raw z_stream) -> c_int
+    extern unsafe fn inflate(anon stream: raw z_stream, flush: c_int) -> c_int
 }
 
 fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
@@ -19,11 +19,18 @@ fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
     let z_stream_end: c_int = 1
 
     mut stream = z_stream()
-    if inflateInit(&raw stream) != z_ok {
-        throw Error::from_string_literal("zlib initialization failed")
+
+    unsafe {
+        if inflateInit(&raw stream) != z_ok {
+            throw Error::from_string_literal("zlib initialization failed")
+        }
     }
 
-    defer inflateEnd(&raw stream)
+    defer {
+        unsafe {
+            inflateEnd(&raw stream)
+        }
+    }
 
     mut input_slice = input[..]
 
@@ -37,7 +44,10 @@ fn zlib_decompress(anon input: ArraySlice<u8>) throws -> [u8] {
         stream.avail_out = buffer.size() as! u32
         unsafe { cpp { "stream.next_out = buffer.unsafe_data();" } }
 
-        let rc = inflate(&raw stream, flush: z_no_flush)
+        mut rc: c_int = 0
+        unsafe {
+            rc = inflate(&raw stream, flush: z_no_flush)
+        }
 
         if rc != z_ok and rc != z_stream_end {
             eprintln("Panic: inflate() returned {}", rc)
